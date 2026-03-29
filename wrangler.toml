@@ -1,0 +1,21 @@
+# Cloudflare Pages Configuration
+name = "linguistic-architect"
+type = "javascript"
+account_id = ""
+workers_dev = true
+route = ""
+zone_id = ""
+
+# Build configuration
+[env.production]
+name = "linguistic-architect"
+routes = []
+triggers = { crons = [] }
+
+[build]
+command = "npm run build"
+cwd = "./"
+watch_paths = ["src/**/*.jsx", "src/**/*.js", "src/**/*.css"]
+
+[build.upload]
+dir = "dist"
