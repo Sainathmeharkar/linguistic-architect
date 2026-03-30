@@ -1,12 +1,15 @@
 // src/components/workspaces/GrammarCorrection/GrammarCorrection.jsx
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import Button from '../../shared/Button';
 import GlassPanel from '../../shared/GlassPanel';
+import AuthModal from '../../auth/AuthModal.jsx';
 import { useClipboard } from '../../../hooks/useClipboard';
 import { useLocalStorage } from '../../../hooks/useLocalStorage';
 import { useKeyboardShortcuts } from '../../../hooks/useKeyboardShortcuts';
 import { exportAsJSON, exportAsText } from '../../../utils/exportUtils';
 import { checkGrammar } from '../../../utils/apiUtils';
+import { useAuth } from '../../../context/AuthContext.jsx';
+import { saveGrammarCheck, loadGrammarHistory, addFavorite, removeFavorite, loadFavorites } from '../../../utils/supabase.js';
 
 const TYPE_STYLE = {
   'Grammar Correction':    { dot:'bg-error',     badge:'bg-error/10 text-error',         icon:'error_outline' },
@@ -17,6 +20,8 @@ const TYPE_STYLE = {
 const DEMO_TEXT = 'The Linguistic Architect platform is more then just a tool for translation. Its an environment where every word is weighing heavily on the final result, ensuring that your communication is perfectly alignment with your goals.';
 
 export default function GrammarCorrection() {
+  const { user } = useAuth();
+  const [showAuthModal, setShowAuthModal] = useState(false);
   const [sourceText, setSourceText]       = useState(DEMO_TEXT);
   const [corrections, setCorrections]     = useState([]);
   const [refinedText, setRefinedText]     = useState('');
@@ -28,7 +33,20 @@ export default function GrammarCorrection() {
   const [ignoredIdx, setIgnoredIdx]       = useState({});
   const { copied, copyToClipboard }       = useClipboard();
   const [favorites, setFavorites]         = useLocalStorage('grammarFavorites', []);
+  const [grammarHistory, setGrammarHistory] = useLocalStorage('grammarHistory', []);
   const fileInputRef = useRef(null);
+
+  // Load cloud favorites when user logs in
+  useEffect(() => {
+    if (!user) return;
+    loadFavorites(user.id).then(data => {
+      const gramFavs = data.filter(d => d.type === 'grammar');
+      if (gramFavs.length > 0) setFavorites(gramFavs.map(d => ({ text: d.source_text, tone: 'Formal', timestamp: d.created_at })));
+    });
+    loadGrammarHistory(user.id).then(data => {
+      if (data.length > 0) setGrammarHistory(data.map(d => ({ id: d.id, originalText: d.original_text, refinedText: d.refined_text, correctionsCount: d.corrections_count, tone: d.tone, timestamp: new Date(d.created_at).toLocaleString() })));
+    });
+  }, [user]);
 
   useKeyboardShortcuts([
     { key:'Enter', ctrlKey:true, callback: handleCheck },
@@ -74,6 +92,14 @@ export default function GrammarCorrection() {
       }
     }
     setRefinedText(refined);
+
+    // Save to Supabase
+    if (user) {
+      saveGrammarCheck(user.id, { originalText: sourceText, refinedText: refined, correctionsCount: result.matches.length, tone });
+    }
+    // Save to local history
+    const histItem = { id: Date.now(), originalText: sourceText, refinedText: refined, correctionsCount: result.matches.length, tone, timestamp: new Date().toLocaleString() };
+    setGrammarHistory(prev => [histItem, ...prev.slice(0, 19)]);
   }
 
   function handleAccept(idx) {
@@ -129,8 +155,11 @@ export default function GrammarCorrection() {
   function handleToggleFavorite() {
     if (favorites.some(f => f.text===sourceText)) {
       setFavorites(favorites.filter(f => f.text!==sourceText));
+      if (user) removeFavorite(user.id, sourceText);
     } else {
-      setFavorites([...favorites, { text:sourceText, tone, timestamp:new Date().toISOString() }]);
+      const fav = { text: sourceText, tone, timestamp: new Date().toISOString() };
+      setFavorites([...favorites, fav]);
+      if (user) addFavorite(user.id, { source: sourceText, translated: refinedText, type: 'grammar' });
     }
   }
 
@@ -373,6 +402,25 @@ export default function GrammarCorrection() {
                 <span key={tag} className="px-2.5 py-1 rounded-full bg-surface-bright text-on-surface text-[10px] font-bold">{tag}</span>
               ))}
             </div>
+            {/* Saved checks — login-gated */}
+            <div className="mt-3 pt-3 border-t border-outline-variant/10">
+              {!user ? (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-on-surface-variant">Sign in to save checks</span>
+                  <button onClick={() => setShowAuthModal(true)} className="text-xs font-bold text-primary hover:underline">Sign In →</button>
+                </div>
+              ) : favorites.length > 0 && (
+                <>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant mb-2">Saved Checks</p>
+                  {favorites.slice(0,3).map((f,i) => (
+                    <button key={i} onClick={() => { setSourceText(f.text); setHasChecked(false); setCorrections([]); }}
+                      className="w-full text-left p-2.5 rounded-lg bg-surface-bright hover:bg-surface-variant transition-all mb-1">
+                      <p className="text-xs text-on-surface truncate">{f.text.slice(0,36)}…</p>
+                    </button>
+                  ))}
+                </>
+              )}
+            </div>
           </div>
 
           {/* Keyboard shortcuts */}
@@ -391,6 +439,7 @@ export default function GrammarCorrection() {
           </div>
         </div>
       </div>
+      {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
     </div>
   );
 }

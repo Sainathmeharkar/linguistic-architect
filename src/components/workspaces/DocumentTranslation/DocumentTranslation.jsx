@@ -1,20 +1,23 @@
 // src/components/workspaces/DocumentTranslation/DocumentTranslation.jsx
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import Button from '../../shared/Button';
 import GlassPanel from '../../shared/GlassPanel';
+import AuthModal from '../../auth/AuthModal.jsx';
 import { useClipboard } from '../../../hooks/useClipboard';
 import { useLocalStorage } from '../../../hooks/useLocalStorage';
 import { useKeyboardShortcuts } from '../../../hooks/useKeyboardShortcuts';
 import { exportAsText, exportAsJSON } from '../../../utils/exportUtils';
 import { translateText, detectLanguage } from '../../../utils/apiUtils';
+import { useAuth } from '../../../context/AuthContext.jsx';
+import { saveTranslation, loadTranslationHistory, addFavorite, removeFavorite, loadFavorites } from '../../../utils/supabase.js';
 
 const LANGUAGES = ['Auto-Detect','English','Spanish','French','German','Japanese',
   'Chinese','Arabic','Portuguese','Russian','Korean','Italian','Turkish','Dutch','Polish'];
 
 export default function DocumentTranslation() {
-  const [sourceText, setSourceText] = useState(
-    'The linguistic architect stands at the intersection of technology and human expression. Our mission is to bridge cultures through precision translation.'
-  );
+  const { user } = useAuth();
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [sourceText, setSourceText] = useState('The linguistic architect stands at the intersection of technology and human expression. Our mission is to bridge cultures through precision translation.');
   const [translatedText, setTranslatedText]   = useState('');
   const [sourceLanguage, setSourceLanguage]   = useState('English');
   const [targetLanguage, setTargetLanguage]   = useState('Spanish');
@@ -26,6 +29,17 @@ export default function DocumentTranslation() {
   const [history, setHistory]     = useLocalStorage('translationHistory', []);
   const [favorites, setFavorites] = useLocalStorage('docFavorites', []);
   const fileInputRef = useRef(null);
+
+  // Load cloud data when user logs in
+  useEffect(() => {
+    if (!user) return;
+    loadTranslationHistory(user.id).then(data => {
+      if (data.length > 0) setHistory(data.map(d => ({ id: d.id, source: d.source_text, translated: d.translated_text, sourceLanguage: d.source_language, targetLanguage: d.target_language, timestamp: new Date(d.created_at).toLocaleString() })));
+    });
+    loadFavorites(user.id).then(data => {
+      if (data.length > 0) setFavorites(data.map(d => ({ id: d.id, source: d.source_text, translated: d.translated_text, sourceLanguage: d.source_language, targetLanguage: d.target_language })));
+    });
+  }, [user]);
 
   useKeyboardShortcuts([
     { key:'Enter', ctrlKey:true,  callback: handleTranslate },
@@ -56,11 +70,9 @@ export default function DocumentTranslation() {
 
   function handleSave() {
     if (!translatedText) return;
-    const item = {
-      id: Date.now(), source: sourceText, translated: translatedText,
-      sourceLanguage, targetLanguage, timestamp: new Date().toLocaleString(),
-    };
-    setHistory(prev => [item, ...prev.slice(0,19)]);
+    const item = { id: Date.now(), source: sourceText, translated: translatedText, sourceLanguage, targetLanguage, timestamp: new Date().toLocaleString() };
+    setHistory(prev => [item, ...prev.slice(0, 19)]);
+    if (user) saveTranslation(user.id, item);
     setStatusMsg('Saved to history!');
     setTimeout(() => setStatusMsg(''), 2000);
   }
@@ -89,8 +101,11 @@ export default function DocumentTranslation() {
     const alreadySaved = favorites.find(f => f.source === sourceText);
     if (alreadySaved) {
       setFavorites(favorites.filter(f => f.source !== sourceText));
+      if (user) removeFavorite(user.id, sourceText);
     } else {
-      setFavorites([{ id:Date.now(), source:sourceText, translated:translatedText, sourceLanguage, targetLanguage }, ...favorites]);
+      const item = { id: Date.now(), source: sourceText, translated: translatedText, sourceLanguage, targetLanguage };
+      setFavorites([item, ...favorites]);
+      if (user) addFavorite(user.id, item);
     }
   }
 
@@ -291,28 +306,37 @@ export default function DocumentTranslation() {
                 <span className="material-symbols-outlined text-primary" style={{fontSize:'18px',fontVariationSettings:"'FILL' 1"}}>history</span>
                 Recent
               </h3>
-              {history.length > 0 && (
+              {user && history.length > 0 && (
                 <button onClick={() => setHistory([])} className="text-[10px] text-on-surface-variant hover:text-error transition-colors font-bold">Clear</button>
               )}
             </div>
-            <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
-              {history.slice(0,6).map((item,idx) => (
-                <button key={idx} onClick={() => handleLoadFromHistory(item)}
-                  className="w-full text-left p-3 rounded-xl bg-surface-container hover:bg-surface-bright transition-all group">
-                  <p className="text-xs font-semibold text-on-surface truncate group-hover:text-primary transition-colors">{item.source.substring(0,32)}...</p>
-                  <div className="flex items-center gap-1 mt-0.5">
-                    <span className="text-[10px] text-on-surface-variant">{item.sourceLanguage}</span>
-                    <span className="material-symbols-outlined text-on-surface-variant/50" style={{fontSize:'10px'}}>arrow_forward</span>
-                    <span className="text-[10px] text-on-surface-variant">{item.targetLanguage}</span>
-                  </div>
-                </button>
-              ))}
-              {history.length === 0 && <p className="text-xs text-on-surface-variant/50 text-center py-3 italic">No history yet — translate something!</p>}
-            </div>
+            {!user ? (
+              <div className="flex flex-col items-center gap-3 py-5 text-center">
+                <span className="material-symbols-outlined text-on-surface-variant/40" style={{fontSize:'28px'}}>lock</span>
+                <p className="text-xs text-on-surface-variant">Sign in to save and view your translation history</p>
+                <button onClick={() => setShowAuthModal(true)}
+                  className="text-xs font-bold text-primary hover:underline">Sign In →</button>
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
+                {history.slice(0,6).map((item,idx) => (
+                  <button key={idx} onClick={() => handleLoadFromHistory(item)}
+                    className="w-full text-left p-3 rounded-xl bg-surface-container hover:bg-surface-bright transition-all group">
+                    <p className="text-xs font-semibold text-on-surface truncate group-hover:text-primary transition-colors">{item.source.substring(0,32)}...</p>
+                    <div className="flex items-center gap-1 mt-0.5">
+                      <span className="text-[10px] text-on-surface-variant">{item.sourceLanguage}</span>
+                      <span className="material-symbols-outlined text-on-surface-variant/50" style={{fontSize:'10px'}}>arrow_forward</span>
+                      <span className="text-[10px] text-on-surface-variant">{item.targetLanguage}</span>
+                    </div>
+                  </button>
+                ))}
+                {history.length === 0 && <p className="text-xs text-on-surface-variant/50 text-center py-3 italic">No history yet — translate something!</p>}
+              </div>
+            )}
           </GlassPanel>
 
           {/* Favorites */}
-          {favorites.length > 0 && (
+          {user && favorites.length > 0 && (
             <GlassPanel variant="default" className="rounded-2xl p-5">
               <h3 className="font-headline font-bold text-sm mb-3 flex items-center gap-2">
                 <span className="material-symbols-outlined text-tertiary" style={{fontSize:'18px',fontVariationSettings:"'FILL' 1"}}>star</span>
@@ -328,6 +352,8 @@ export default function DocumentTranslation() {
               </div>
             </GlassPanel>
           )}
+
+          {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
 
           {/* Keyboard shortcuts */}
           <div className="bg-surface-container rounded-2xl p-4 border border-outline-variant/10 space-y-2">

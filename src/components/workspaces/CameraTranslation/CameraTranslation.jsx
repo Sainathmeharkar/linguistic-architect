@@ -1,12 +1,15 @@
 // src/components/workspaces/CameraTranslation/CameraTranslation.jsx
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import Button from '../../shared/Button';
 import GlassPanel from '../../shared/GlassPanel';
+import AuthModal from '../../auth/AuthModal.jsx';
 import { useClipboard } from '../../../hooks/useClipboard';
 import { useLocalStorage } from '../../../hooks/useLocalStorage';
 import { useKeyboardShortcuts } from '../../../hooks/useKeyboardShortcuts';
 import { exportAsJSON, exportAsText } from '../../../utils/exportUtils';
 import { translateText, extractTextFromImage, detectLanguage } from '../../../utils/apiUtils';
+import { useAuth } from '../../../context/AuthContext.jsx';
+import { saveTranslation, loadTranslationHistory } from '../../../utils/supabase.js';
 
 const CONTEXT_MODES = [
   { label:'Signage',     icon:'signpost' },
@@ -18,6 +21,8 @@ const LANGUAGES = ['Auto-Detect','English','Spanish','French','German','Japanese
   'Chinese','Arabic','Portuguese','Russian','Korean','Italian','Turkish'];
 
 export default function CameraTranslation() {
+  const { user } = useAuth();
+  const [showAuthModal, setShowAuthModal] = useState(false);
   const [sourceLanguage, setSourceLanguage]   = useState('Auto-Detect');
   const [targetLanguage, setTargetLanguage]   = useState('English');
   const [contextMode, setContextMode]         = useState('Signage');
@@ -96,12 +101,10 @@ export default function CameraTranslation() {
     try {
       const result = await translateText(text, src, tgt);
       setTranslatedText(result);
-      // Save to history
-      setHistory(prev => [{
-        detected: text, translated: result,
-        source: src, target: tgt,
-        timestamp: new Date().toLocaleString(),
-      }, ...prev.slice(0,19)]);
+      const histItem = { detected: text, translated: result, source: src, target: tgt, timestamp: new Date().toLocaleString() };
+      setHistory(prev => [histItem, ...prev.slice(0, 19)]);
+      // Sync to Supabase
+      if (user) saveTranslation(user.id, { source: text, translated: result, sourceLanguage: src, targetLanguage: tgt });
       setStatusMsg('');
     } catch {
       setStatusMsg('⚠ Translation failed. Check your connection.');
@@ -408,24 +411,32 @@ export default function CameraTranslation() {
                 <span className="material-symbols-outlined text-primary" style={{fontSize:'18px',fontVariationSettings:"'FILL' 1"}}>history</span>
                 Recent Captures
               </h4>
-              {history.length > 0 && (
+              {user && history.length > 0 && (
                 <button onClick={() => setHistory([])} className="text-[10px] text-on-surface-variant hover:text-error transition-colors font-bold">Clear</button>
               )}
             </div>
-            <div className="space-y-2 max-h-44 overflow-y-auto custom-scrollbar">
-              {history.slice(0,5).map((item, idx) => (
-                <button key={idx} onClick={() => handleLoadHistory(item)}
-                  className="w-full text-left p-3 rounded-xl bg-surface-container hover:bg-surface-bright transition-all group">
-                  <p className="text-xs font-semibold text-on-surface truncate group-hover:text-primary transition-colors">{item.detected.substring(0,28)}...</p>
-                  <div className="flex items-center gap-1 mt-0.5">
-                    <span className="text-[10px] text-on-surface-variant">{item.source}</span>
-                    <span className="material-symbols-outlined text-on-surface-variant/50" style={{fontSize:'10px'}}>arrow_forward</span>
-                    <span className="text-[10px] text-on-surface-variant">{item.target}</span>
-                  </div>
-                </button>
-              ))}
-              {history.length === 0 && <p className="text-xs text-on-surface-variant/50 text-center py-3 italic">No captures yet — upload an image!</p>}
-            </div>
+            {!user ? (
+              <div className="flex flex-col items-center gap-3 py-5 text-center">
+                <span className="material-symbols-outlined text-on-surface-variant/40" style={{fontSize:'28px'}}>lock</span>
+                <p className="text-xs text-on-surface-variant">Sign in to save your OCR captures and history</p>
+                <button onClick={() => setShowAuthModal(true)} className="text-xs font-bold text-primary hover:underline">Sign In →</button>
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-44 overflow-y-auto custom-scrollbar">
+                {history.slice(0,5).map((item, idx) => (
+                  <button key={idx} onClick={() => handleLoadHistory(item)}
+                    className="w-full text-left p-3 rounded-xl bg-surface-container hover:bg-surface-bright transition-all group">
+                    <p className="text-xs font-semibold text-on-surface truncate group-hover:text-primary transition-colors">{item.detected.substring(0,28)}...</p>
+                    <div className="flex items-center gap-1 mt-0.5">
+                      <span className="text-[10px] text-on-surface-variant">{item.source}</span>
+                      <span className="material-symbols-outlined text-on-surface-variant/50" style={{fontSize:'10px'}}>arrow_forward</span>
+                      <span className="text-[10px] text-on-surface-variant">{item.target}</span>
+                    </div>
+                  </button>
+                ))}
+                {history.length === 0 && <p className="text-xs text-on-surface-variant/50 text-center py-3 italic">No captures yet — upload an image!</p>}
+              </div>
+            )}
           </GlassPanel>
 
           {/* API Status */}
